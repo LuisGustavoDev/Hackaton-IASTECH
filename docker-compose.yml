@@ -1,0 +1,19 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: iastech-app
+
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./tests:/app/tests
+
+    working_dir: /app
+
+    environment:
+      PYTHONUNBUFFERED: "1"
+
+    command: python -m app.main

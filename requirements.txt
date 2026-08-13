@@ -1,0 +1,14 @@
+# Processamento de imagens
+opencv-python-headless
+Pillow
+numpy
+
+# OCR
+pytesseract
+paddleocr
+
+# Processamento e estruturação de dados
+pandas
+
+# Exportação para Excel
+openpyxl
