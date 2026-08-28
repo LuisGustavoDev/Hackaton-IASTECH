@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 entrada = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
-	"dataset/original/diagramas/qtd_baixa/qld_baixa/102.jpg"
+	"dataset/original/diagramas/qtd_baixa/qld_alta/155.jpg"
 )
 saida_grayscale = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(
 	"dataset/processado/pid_102_gray.png"
@@ -34,7 +34,7 @@ saida_bilateralFilter = Path(
 	"dataset/processado/pid_102_bilateralFilter.png"
 )
 saida_binary = Path(
-	"dataset/processado/pid_102_binary.png"
+	"dataset/processado/pid_155_binary.png"
 )
 saida_otsu = Path(
 	"dataset/processado/pid_102_otsu.png"
@@ -124,11 +124,11 @@ if not cv2.imwrite(str(saida_resized_nearest), imagem_2x_nearest):
 
 
 # Grayscale
-"""cinza = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
+cinza = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
 
 saida_grayscale.parent.mkdir(parents=True, exist_ok=True)
 if not cv2.imwrite(str(saida_grayscale), cinza):
-	raise OSError(f"Não foi possível salvar a imagem processada: {saida_grayscale}")"""
+	raise OSError(f"Não foi possível salvar a imagem processada: {saida_grayscale}")
 
 
 # Contraste
@@ -195,9 +195,9 @@ TIPOS DE BINARIZAÇÃO:
 	- Threshold automático (otsu)
 	- Adaptive
 """
-"""threshold_value, binary = cv2.threshold(
+threshold_value, binary = cv2.threshold(
 	cinza,
-	200,
+	0,
 	255,
 	cv2.THRESH_BINARY
 )
@@ -228,7 +228,7 @@ if not cv2.imwrite(str(saida_otsu), otsu):
 
 saida_adaptative.parent.mkdir(parents=True, exist_ok=True)
 if not cv2.imwrite(str(saida_adaptative), adaptive):
-	raise OSError(f"Não foi possível salvar a imagem processada: {saida_adaptative}")"""
+	raise OSError(f"Não foi possível salvar a imagem processada: {saida_adaptative}")
 
 
 # Operações Morfológicas
