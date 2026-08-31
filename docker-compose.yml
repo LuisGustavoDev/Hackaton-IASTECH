@@ -9,6 +9,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./data:/app/data
+      - ./dataset:/app/dataset
       - ./tests:/app/tests
 
     working_dir: /app
@@ -16,4 +17,4 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
 
-    command: python -m app.main
+    command: python -m app.test_text_regions
