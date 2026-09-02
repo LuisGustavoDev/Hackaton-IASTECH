@@ -3,7 +3,7 @@ Treino do detector de equipamentos (Faster R-CNN).
 
 Este pacote roda SÓ na máquina forte (desktop com GPU NVIDIA, CUDA) e é
 excluído da imagem Docker de produção pelo .dockerignore. Ele depende de
-pycocotools, tqdm e do dataset COCO — nada disso faz sentido no notebook
+pycocotools e do dataset COCO — nada disso faz sentido no notebook
 que roda a inferência.
 
 A ponte entre os dois mundos é um único arquivo: o checkpoint portátil
