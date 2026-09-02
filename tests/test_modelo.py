@@ -63,3 +63,25 @@ def test_label_fora_do_intervalo_e_erro(label):
 
 def test_arquitetura_e_a_do_benchmark():
     assert ARQUITETURA == "fasterrcnn_resnet50_fpn_v2"
+
+
+@pytest.mark.lento
+def test_teto_de_deteccoes_e_maior_que_o_padrao_do_torchvision():
+    """
+    O torchvision usa 100 por padrão. Imagens densas do nosso dataset têm
+    até 175 símbolos anotados — com o padrão, tudo além do 100º sai
+    descartado sem aviso nenhum.
+    """
+    from app import config
+
+    modelo = construir_faster_rcnn(3)
+
+    assert config.DETECTOR_MAX_DETECCOES > 100
+    assert modelo.roi_heads.detections_per_img == config.DETECTOR_MAX_DETECCOES
+
+
+@pytest.mark.lento
+def test_teto_de_deteccoes_pode_ser_sobrescrito():
+    modelo = construir_faster_rcnn(3, max_deteccoes=500)
+
+    assert modelo.roi_heads.detections_per_img == 500

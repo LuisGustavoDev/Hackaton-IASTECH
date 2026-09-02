@@ -22,13 +22,20 @@ from torchvision.models.detection.faster_rcnn import (
     FastRCNNPredictor,
 )
 
+from app import config
+
 ARQUITETURA = "fasterrcnn_resnet50_fpn_v2"
 
 # Índice reservado pelo torchvision para "background".
 LABEL_BACKGROUND = 0
 
 
-def construir_faster_rcnn(num_classes: int, pesos_pretreinados: bool = False):
+def construir_faster_rcnn(
+    num_classes: int,
+    pesos_pretreinados: bool = False,
+    max_deteccoes: int | None = None,
+    score_minimo: float | None = None,
+):
     """
     Monta o Faster R-CNN com a cabeça de classificação dimensionada para
     `num_classes` classes de equipamento + 1 (background).
@@ -40,12 +47,29 @@ def construir_faster_rcnn(num_classes: int, pesos_pretreinados: bool = False):
     sentido no treino (exige internet na primeira execução). Na inferência
     use False: os pesos vêm inteiros do checkpoint e a máquina de produção
     não precisa de rede nenhuma.
+
+    `max_deteccoes` substitui o `box_detections_per_img` do torchvision,
+    que vale 100 por padrão. Diagramas densos do nosso dataset chegam a
+    175 símbolos anotados numa imagem só; com o padrão, tudo que passa do
+    100º é descartado sem aviso. Não afeta os pesos, então pode ser
+    mudado sem retreinar.
+
+    `score_minimo` é o `box_score_thresh`: o corte que o modelo aplica
+    INTERNAMENTE, antes de a predição chegar ao nosso código. É
+    diferente do limiar do detector, que filtra o que já saiu — o que
+    for descartado aqui não tem como ser recuperado depois.
     """
     if num_classes < 1:
         raise ValueError(
             f"num_classes precisa ser >= 1 (sem contar o background), "
             f"recebido: {num_classes}"
         )
+
+    if max_deteccoes is None:
+        max_deteccoes = config.DETECTOR_MAX_DETECCOES
+
+    if score_minimo is None:
+        score_minimo = config.DETECTOR_SCORE_MINIMO_MODELO
 
     weights = (
         FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT
@@ -56,6 +80,8 @@ def construir_faster_rcnn(num_classes: int, pesos_pretreinados: bool = False):
     modelo = fasterrcnn_resnet50_fpn_v2(
         weights=weights,
         weights_backbone=None,
+        box_detections_per_img=max_deteccoes,
+        box_score_thresh=score_minimo,
     )
 
     in_features = modelo.roi_heads.box_predictor.cls_score.in_features

@@ -31,6 +31,8 @@ class DetectorEquipamentos:
         caminho_checkpoint: str | Path | None = None,
         device: str = "cpu",
         limiar: float | None = None,
+        max_deteccoes: int | None = None,
+        nms_entre_classes: float | None = None,
     ) -> None:
         self.caminho_checkpoint = Path(
             caminho_checkpoint or config.caminho_checkpoint()
@@ -38,6 +40,16 @@ class DetectorEquipamentos:
         self.device = torch.device(device)
         self.limiar = (
             limiar if limiar is not None else config.limiar_deteccao()
+        )
+        self.max_deteccoes = (
+            max_deteccoes
+            if max_deteccoes is not None
+            else config.DETECTOR_MAX_DETECCOES
+        )
+        self.nms_entre_classes = (
+            nms_entre_classes
+            if nms_entre_classes is not None
+            else config.DETECTOR_NMS_ENTRE_CLASSES
         )
 
         checkpoint = carregar_checkpoint(self.caminho_checkpoint)
@@ -48,6 +60,10 @@ class DetectorEquipamentos:
         modelo = construir_faster_rcnn(
             checkpoint["num_classes"],
             pesos_pretreinados=False,
+            max_deteccoes=self.max_deteccoes,
+            score_minimo=min(
+                config.DETECTOR_SCORE_MINIMO_MODELO, self.limiar
+            ),
         )
         modelo.load_state_dict(checkpoint["state_dict"])
         modelo.to(self.device)
@@ -78,6 +94,8 @@ class DetectorEquipamentos:
         boxes = saidas["boxes"].cpu()
         scores = saidas["scores"].cpu()
         labels = saidas["labels"].cpu()
+
+        boxes, scores, labels = self._nms_entre_classes(boxes, scores, labels)
 
         deteccoes = []
 
@@ -111,6 +129,28 @@ class DetectorEquipamentos:
         deteccoes.sort(key=lambda d: d["score"], reverse=True)
 
         return deteccoes
+
+    def _nms_entre_classes(self, boxes, scores, labels):
+        """
+        Remove caixas muito sobrepostas mesmo quando classificadas em
+        classes diferentes.
+
+        O Faster R-CNN já aplica NMS, mas por classe: nada impede que o
+        mesmo símbolo saia duas vezes, uma como "Válvula" e outra como
+        "Outro". Aqui vence a de maior confiança.
+
+        Símbolos de P&ID legitimamente vizinhos (válvulas empilhadas numa
+        linha, por exemplo) raramente chegam a 0.5 de IoU entre si, então
+        o filtro remove duplicata sem comer símbolo válido.
+        """
+        if self.nms_entre_classes <= 0 or boxes.numel() == 0:
+            return boxes, scores, labels
+
+        from torchvision.ops import nms
+
+        manter = nms(boxes, scores, self.nms_entre_classes)
+
+        return boxes[manter], scores[manter], labels[manter]
 
     def _para_tensor(self, imagem: np.ndarray) -> torch.Tensor:
         """

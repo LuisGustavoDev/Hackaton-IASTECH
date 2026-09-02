@@ -111,3 +111,123 @@ def test_obter_detector_reaproveita_a_instancia(checkpoint, monkeypatch):
     redefinir_detector()
 
     assert obter_detector() is obter_detector()
+
+
+def test_nms_entre_classes_remove_caixa_duplicada(detector):
+    """
+    O Faster R-CNN aplica NMS por classe, então o mesmo símbolo pode sair
+    duas vezes com rótulos diferentes. Aqui vence a de maior confiança.
+    """
+    boxes = torch.tensor(
+        [
+            [10.0, 10.0, 100.0, 100.0],
+            [12.0, 12.0, 102.0, 102.0],  # mesma caixa, outra classe
+        ]
+    )
+    scores = torch.tensor([0.9, 0.7])
+    labels = torch.tensor([1, 2])
+
+    boxes, scores, labels = detector._nms_entre_classes(boxes, scores, labels)
+
+    assert len(boxes) == 1
+    assert float(scores[0]) == pytest.approx(0.9)
+    assert int(labels[0]) == 1
+
+
+def test_nms_entre_classes_preserva_simbolos_vizinhos(detector):
+    """
+    Válvulas empilhadas numa mesma linha de tubulação são caixas
+    distintas e próximas — não podem ser fundidas.
+    """
+    boxes = torch.tensor(
+        [
+            [10.0, 10.0, 100.0, 60.0],
+            [10.0, 70.0, 100.0, 120.0],
+        ]
+    )
+    scores = torch.tensor([0.9, 0.8])
+    labels = torch.tensor([1, 1])
+
+    boxes, _, _ = detector._nms_entre_classes(boxes, scores, labels)
+
+    assert len(boxes) == 2
+
+
+def test_nms_entre_classes_pode_ser_desligado(checkpoint):
+    sem_nms = DetectorEquipamentos(
+        checkpoint, limiar=0.0, nms_entre_classes=0
+    )
+
+    boxes = torch.tensor(
+        [[10.0, 10.0, 100.0, 100.0], [12.0, 12.0, 102.0, 102.0]]
+    )
+    scores = torch.tensor([0.9, 0.7])
+    labels = torch.tensor([1, 2])
+
+    boxes, _, _ = sem_nms._nms_entre_classes(boxes, scores, labels)
+
+    assert len(boxes) == 2
+
+
+def test_nms_entre_classes_com_zero_deteccoes(detector):
+    vazio_boxes = torch.zeros((0, 4))
+    vazio = torch.zeros((0,))
+
+    boxes, _, _ = detector._nms_entre_classes(vazio_boxes, vazio, vazio)
+
+    assert len(boxes) == 0
+
+
+def test_detector_usa_o_teto_de_deteccoes_configurado(checkpoint):
+    from app import config
+
+    detector = DetectorEquipamentos(checkpoint, limiar=0.0)
+
+    assert detector.modelo.roi_heads.detections_per_img == (
+        config.DETECTOR_MAX_DETECCOES
+    )
+
+
+def test_limiar_padrao_privilegia_cobertura():
+    """
+    Política do projeto: detectar o máximo possível, mesmo símbolo mal
+    desenhado. O padrão foi medido sobre as 21 imagens anotadas — a 0.05
+    a revocação é 0.366 contra 0.287 a 0.5, com F1 ligeiramente melhor.
+    """
+    from app import config
+
+    assert config.DEFAULT_DETECTOR_SCORE_THRESHOLD <= 0.05
+
+
+def test_piso_do_modelo_acompanha_um_limiar_mais_baixo(checkpoint):
+    """
+    O torchvision descarta internamente abaixo de box_score_thresh, antes
+    de a predição chegar ao nosso código. Pedir um limiar de 0.01 sem
+    baixar o piso junto não devolveria detecção nenhuma abaixo de 0.05 —
+    o filtro externo não recupera o que o modelo já jogou fora.
+    """
+    detector = DetectorEquipamentos(checkpoint, limiar=0.01)
+
+    assert detector.modelo.roi_heads.score_thresh <= 0.01
+
+
+def test_piso_do_modelo_nao_sobe_com_limiar_alto(checkpoint):
+    """Limiar alto filtra depois; o piso não precisa subir junto."""
+    from app import config
+
+    detector = DetectorEquipamentos(checkpoint, limiar=0.9)
+
+    assert detector.modelo.roi_heads.score_thresh == (
+        config.DETECTOR_SCORE_MINIMO_MODELO
+    )
+
+
+def test_nms_entre_classes_continua_ligado_por_padrao():
+    """
+    Medido: desligá-lo acrescenta 654 predições sobre as 21 imagens de
+    teste e ganha 2 acertos — a precisão cai de 0.390 para 0.213. O que
+    ele remove é duplicata quase pura, não cobertura.
+    """
+    from app import config
+
+    assert config.DETECTOR_NMS_ENTRE_CLASSES > 0
