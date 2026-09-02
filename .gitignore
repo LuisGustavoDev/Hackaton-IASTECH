@@ -70,3 +70,23 @@ data/output/*
 *.tmp
 *.temp
 *.bak
+# ==============================
+# Modelos treinados
+# ==============================
+#
+# Checkpoints do detector (~170 MB cada). Ficam fora do Git; o fluxo é
+# treinar na máquina com GPU e copiar o .pt para data/models/.
+
+*.pt
+data/models/*
+
+!data/models/.gitkeep
+
+# ==============================
+# Dataset convertido para COCO
+# ==============================
+#
+# Gerado por 'python -m app.training.converter_anotacoes' a partir de
+# dataset/original, que é o que está versionado.
+
+dataset/coco/

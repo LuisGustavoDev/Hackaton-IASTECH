@@ -1,10 +1,18 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from app.core.erros import (
+    CheckpointInvalidoError,
+    ImagemInvalidaError,
+    ProcessamentoError,
+)
 from app.services.processamento import processar_imagem
 
-
 router = APIRouter(prefix="/api")
+
+MEDIA_TYPE_XLSX = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 
 
 @router.get("/health")
@@ -17,32 +25,38 @@ def health():
 
 @router.post("/process")
 async def process(file: UploadFile = File(...)):
+    """
+    Recebe uma imagem de P&ID e devolve a planilha de equipamentos.
 
-    if not file.content_type:
-        raise HTTPException(
-            status_code=400,
-            detail="Tipo de arquivo não informado."
-        )
-
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=400,
-            detail="O arquivo enviado precisa ser uma imagem."
-        )
-
-    imagem = await file.read()
+    O content-type informado no upload não é usado como critério: ele vem
+    do cliente e um PDF renomeado chega como "image/png". Quem decide se o
+    arquivo é uma imagem é app/services/validacao_imagem.py, olhando o
+    conteúdo.
+    """
+    conteudo = await file.read()
 
     try:
-        csv_path = processar_imagem(imagem)
+        resultado = processar_imagem(conteudo)
 
-        return FileResponse(
-            path=csv_path,
-            media_type="text/csv",
-            filename="resultado.csv",
-        )
+    except ImagemInvalidaError as erro:
+        # Erro do arquivo enviado.
+        raise HTTPException(status_code=400, detail=str(erro))
 
-    except Exception as e:
+    except CheckpointInvalidoError as erro:
+        # O sistema está no ar, mas sem modelo para trabalhar.
+        raise HTTPException(status_code=503, detail=str(erro))
+
+    except ProcessamentoError as erro:
+        raise HTTPException(status_code=500, detail=str(erro))
+
+    except Exception as erro:
         raise HTTPException(
             status_code=500,
-            detail=f"Erro durante o processamento: {str(e)}",
+            detail=f"Erro durante o processamento: {erro}",
         )
+
+    return FileResponse(
+        path=resultado.planilha_xlsx,
+        media_type=MEDIA_TYPE_XLSX,
+        filename="resultado.xlsx",
+    )

@@ -1,0 +1,16 @@
+# Dependências EXCLUSIVAS do treino (app/training).
+#
+# Instale só na máquina forte (desktop com GPU NVIDIA / CUDA). A máquina
+# de inferência não precisa de nada disso: o que ela recebe é apenas o
+# arquivo de checkpoint .pt.
+#
+#   pip install -r requirements-treino.txt
+#
+# Para treinar com CUDA, instale torch/torchvision pelo índice da sua
+# versão de CUDA ANTES deste arquivo, ex.:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+-r requirements.txt
+
+pycocotools
+tqdm
