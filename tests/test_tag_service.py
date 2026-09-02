@@ -49,6 +49,10 @@ def test_segunda_letra_pode_modificar_a_variavel():
         ("TT305", "3"),
         ("XV 203", "2"),
         ("LC-9", "9"),
+        # Zero à esquerda é largura de escrita, não grupo.
+        ("PI-0013", "1"),
+        ("FT 007", "7"),
+        ("XV-0000", "0"),
     ],
 )
 def test_grupo_e_o_primeiro_digito_do_numero(texto, grupo_esperado):
@@ -101,3 +105,68 @@ def test_dicionario_isa_traz_as_letras_da_norma():
     assert isa["F"]["variavel_medida"] == "Vazão"
     assert isa["T"]["funcao_saida"] == "Transmitir"
     assert len(isa) == 26
+
+
+# ---------------------------------------------------------------------
+# Filtro da coluna TAG
+#
+# O Tesseract produz "letras" a partir do traço dos próprios símbolos.
+# Esses valores foram observados numa saída real do sistema e não podem
+# chegar à planilha do cliente disfarçados de identificador.
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ruido", ["(X)", "Oo", "SH", "ro.", "y", "|", "---"])
+def test_ruido_do_ocr_nao_vira_tag(ruido):
+    analise = tag_service.analisar(ruido, tipo_detectado="Válvula")
+
+    assert analise.tag == ""
+    assert analise.texto_bruto == ruido
+    assert analise.descricao == "Válvula"
+
+
+@pytest.mark.parametrize(
+    "texto, tag_esperada",
+    [
+        ("PI 0013", "PI-0013"),
+        ("PI-0013", "PI-0013"),
+        ("PI0013", "PI-0013"),
+        ("ft 210", "FT-210"),
+    ],
+)
+def test_tag_e_normalizada_para_letras_hifen_numero(texto, tag_esperada):
+    """
+    O mesmo instrumento aparece escrito de formas diferentes conforme o
+    desenho e o OCR; a planilha precisa de uma forma só para o cliente
+    ordenar e filtrar.
+    """
+    assert tag_service.analisar(texto).tag == tag_esperada
+
+
+def test_texto_bruto_preserva_o_que_o_ocr_leu():
+    analise = tag_service.analisar("PI 0013")
+
+    assert analise.tag == "PI-0013"
+    assert analise.texto_bruto == "PI 0013"
+
+
+def test_numero_sozinho_nao_vira_tag():
+    """
+    Era o sintoma do balão ISA lido pela metade: "0013" sem o "PI" não
+    permite deduzir Descrição nem Grupo. A correção está na associação
+    (juntar as duas linhas); aqui só se garante que o meio-resultado não
+    vaza para a planilha como se fosse uma TAG.
+    """
+    analise = tag_service.analisar("0013", tipo_detectado="Instrumento")
+
+    assert analise.tag == ""
+    assert analise.grupo == ""
+    assert analise.descricao == "Instrumento"
+
+
+def test_balao_isa_completo_produz_descricao_e_grupo():
+    analise = tag_service.analisar("PI 0013", tipo_detectado="Instrumento")
+
+    assert analise.tag == "PI-0013"
+    assert analise.descricao == "Indicador de Pressão"
+    assert analise.grupo == "1"

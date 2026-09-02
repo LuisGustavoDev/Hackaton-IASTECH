@@ -69,6 +69,7 @@ class AnaliseTag:
     """Resultado da leitura de uma TAG."""
 
     tag: str
+    texto_bruto: str
     letras: str
     numero: str
     grupo: str
@@ -125,6 +126,12 @@ def analisar(texto: str | None, tipo_detectado: str = "") -> AnaliseTag:
 
     `tipo_detectado` é o nome da classe do Faster R-CNN, usado como
     descrição quando a TAG não permite chegar a nada melhor.
+
+    Texto que não casa com o padrão ISA (letras + número) NÃO vira TAG: o
+    campo sai vazio e o original fica em `texto_bruto`. Sem esse corte, o
+    ruído que o Tesseract produz a partir do traço dos símbolos — "(X)",
+    "Oo", "SH", "ro." — ia parar na planilha entregue ao cliente
+    disfarçado de identificador de equipamento.
     """
     texto = (texto or "").strip()
 
@@ -132,7 +139,8 @@ def analisar(texto: str | None, tipo_detectado: str = "") -> AnaliseTag:
 
     if correspondencia is None:
         return AnaliseTag(
-            tag=texto,
+            tag="",
+            texto_bruto=texto,
             letras="",
             numero="",
             grupo="",
@@ -145,12 +153,33 @@ def analisar(texto: str | None, tipo_detectado: str = "") -> AnaliseTag:
     descricao = _montar_descricao(letras) or tipo_detectado
 
     return AnaliseTag(
-        tag=texto,
+        # Normaliza para LETRAS-NÚMERO: o mesmo instrumento aparece como
+        # "PI 0013", "PI-0013" ou "PI0013" dependendo do desenho e do OCR,
+        # e uma planilha que o cliente vai ordenar e filtrar precisa de
+        # uma forma só.
+        tag=f"{letras}-{numero}",
+        texto_bruto=texto,
         letras=letras,
         numero=numero,
-        grupo=numero[0],
+        grupo=_grupo(numero),
         descricao=descricao,
     )
+
+
+def _grupo(numero: str) -> str:
+    """
+    Primeiro dígito significativo do número da TAG.
+
+    Zeros à esquerda são ignorados: "PI-0013" pertence ao grupo 1, não a
+    um grupo 0. A ata fala em "reator 1, reator 2" — um grupo "0" não
+    corresponde a equipamento nenhum na planta, seria só um artefato da
+    largura fixa com que a tag foi escrita no desenho.
+    """
+    significativo = numero.lstrip("0")
+
+    # Número inteiramente zerado ("000"): não há dígito significativo, e
+    # inventar um seria pior do que devolver o que está escrito.
+    return significativo[0] if significativo else "0"
 
 
 def _montar_descricao(letras: str) -> str:
