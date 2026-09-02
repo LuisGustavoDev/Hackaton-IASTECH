@@ -163,13 +163,78 @@ interativa em `http://localhost:8000/docs`.
 | Método | Rota | Descrição |
 |---|---|---|
 | `GET` | `/api/health` | Verificação de disponibilidade |
-| `POST` | `/api/process` | Recebe uma imagem de P&ID e devolve a planilha `.xlsx` |
+| `POST` | `/api/process` | Processa uma imagem. `?formato=xlsx` (padrão), `csv` ou `json` |
+| `GET` | `/api/resultado/{id}` | Baixa a planilha de uma execução já processada. `?formato=xlsx` (padrão) ou `csv` |
+| `GET` | `/api/execucoes` | Histórico de processamentos, do mais recente para o mais antigo |
 
 Enviando uma imagem para processamento:
 
 ```bash
 curl -X POST http://localhost:8000/api/process -F "file=@diagrama.jpg" -o resultado.xlsx
 ```
+
+### Consumindo pelo frontend
+
+O `curl` acima já recebe o arquivo. Um **navegador**, porém, precisa de
+duas coisas a mais, e ambas estão configuradas:
+
+- **CORS.** Sem os cabeçalhos, o navegador bloqueia a chamada antes de ela
+  sair — e como o `curl` não passa por CORS, o problema só aparece quando
+  a interface entra em cena. Origens permitidas via `CORS_ORIGINS`
+  (padrão `*`, adequado para uma ferramenta local sem autenticação).
+- **`Content-Disposition` exposto.** Por padrão o JavaScript só enxerga
+  alguns cabeçalhos da resposta, e esse não está entre eles: sem
+  `expose_headers`, o front recebe o arquivo mas não consegue ler o nome
+  sugerido para o download.
+
+O fluxo que a Etapa 04 do Plano de Desenvolvimento pede — mostrar a
+quantidade encontrada e uma pré-visualização da lista, e só então exportar
+o Excel — se faz em duas chamadas, sem reprocessar a imagem:
+
+```js
+// 1. processa e recebe as linhas para pré-visualizar
+const dados = new FormData();
+dados.append("file", arquivo);
+
+const resposta = await fetch("http://localhost:8000/api/process?formato=json", {
+  method: "POST",
+  body: dados,
+});
+
+if (!resposta.ok) {
+  const { detail } = await resposta.json();
+  throw new Error(detail);          // 400 arquivo inválido, 503 sem modelo
+}
+
+const { execucao_id, quantidade, linhas, download } = await resposta.json();
+// -> renderiza `quantidade` e a tabela `linhas`
+
+// 2. só quando o usuário clicar em "Exportar Excel"
+const arquivoXlsx = await fetch(`http://localhost:8000${download.xlsx}`);
+const blob = await arquivoXlsx.blob();
+```
+
+Resposta de `formato=json`:
+
+```json
+{
+  "execucao_id": 23,
+  "arquivo": "101.jpg",
+  "quantidade": 20,
+  "linhas": [
+    {"TAG": "PI-0013", "Tipo": "Instrumento", "Descrição": "Indicador de Pressão",
+     "Coordenada X": 159, "Coordenada Y": 142, "Grupo": "1"}
+  ],
+  "download": {
+    "xlsx": "/api/resultado/23?formato=xlsx",
+    "csv": "/api/resultado/23?formato=csv"
+  }
+}
+```
+
+`download` vem `null` quando a execução não pôde ser gravada no banco (a
+persistência é best-effort): não há de onde baixar depois, e um link que
+daria 404 seria pior que a ausência dele.
 
 A planilha devolvida tem exatamente estas colunas, nesta ordem:
 
@@ -178,7 +243,7 @@ A planilha devolvida tem exatamente estas colunas, nesta ordem:
 
 | Coluna | De onde vem |
 |---|---|
-| **TAG** | Texto lido pelo OCR dentro (ou ao lado) do equipamento detectado |
+| **TAG** | Texto lido pelo OCR dentro (ou ao lado) do equipamento detectado, normalizado para `LETRAS-NÚMERO`. Um balão ISA traz as letras numa linha e o número na outra (`PI` / `0013`): todos os textos internos são juntados na ordem de leitura antes de interpretar. Texto que não casa com o padrão ISA fica de fora — o Tesseract lê o traço dos próprios símbolos como letras (`(X)`, `Oo`, `SH`) e isso não pode virar identificador |
 | **Tipo** | Classe atribuída pelo Faster R-CNN (ex.: `Válvula`, `Bomba`, `Tanque`) |
 | **Descrição** | Decomposição das letras da TAG pela norma ISA-5.1 (`FT-210` → "Transmissor de Vazão"). Sem TAG legível, cai para o nome da classe detectada |
 | **Coordenada X / Y** | Centro da *bounding box* do equipamento, em pixels da imagem original |
@@ -259,6 +324,65 @@ necessário para reconstruir o modelo e traduzir as predições:
 > dataset, "Bomba" é id 3 no `train.json` e id 1 no `val.json`), então a
 > lista é construída casando as categorias pelo **nome**, nunca pelo id.
 
+### Primeira configuração da máquina de treino
+
+Feito uma vez só, na máquina com GPU. **O treino roda direto no sistema,
+fora do Docker** — o `docker-compose.yml` não expõe GPU ao container.
+
+**1. Pré-requisitos**
+
+| Item | Verificação |
+|---|---|
+| Driver NVIDIA recente | `nvidia-smi` (precisa mostrar a GPU e CUDA 12.x) |
+| Git | `git --version` |
+| Python 3.11–3.13 | `py --version` (Windows) / `python3 --version` (Linux) |
+
+Não é preciso instalar o CUDA Toolkit separadamente: as rodas do PyTorch
+já trazem as bibliotecas CUDA. Só o **driver** precisa estar atualizado.
+
+**2. Clonar o repositório**
+
+```bash
+git clone https://github.com/LuisGustavoDev/Hackaton-IASTECH.git
+```
+
+O dataset anotado (`dataset/original/`, 92 imagens com os `.xml`) está
+versionado — vem junto no clone, não precisa ser copiado à parte.
+
+**3. Criar o ambiente virtual**
+
+```bash
+py -3.13 -m venv .venv
+```
+
+Ative-o: `.venv\Scripts\activate` (Windows) ou `source .venv/bin/activate` (Linux).
+
+**4. Instalar o PyTorch com CUDA — antes de tudo**
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+```
+
+Esta é a etapa que mais dá errado. Instalar `torch` pelo PyPI padrão traz
+a build de **CPU**, e o treino roda dezenas de vezes mais devagar sem
+avisar. A GTX 1660 (Turing, SM 7.5) é atendida pela build `cu126`.
+
+**5. Instalar o resto**
+
+```bash
+pip install -r requirements-treino.txt
+```
+
+**6. Confirmar que a GPU foi reconhecida**
+
+```bash
+python -c "import torch; print(torch.__version__); print('CUDA:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'sem GPU')"
+```
+
+Tem de imprimir uma versão terminada em `+cu126` e `CUDA: True`. Se
+aparecer `+cpu` ou `CUDA: False`, refaça o passo 4 com
+`pip uninstall torch torchvision` antes.
+
 ### 1. Preparar o dataset (máquina de treino)
 
 As anotações vêm do Make Sense AI em Pascal VOC (`.xml`). Converta para COCO:
@@ -273,8 +397,7 @@ Isso lê `dataset/original/treinamento` e `dataset/original/testes` e escreve
 ### 2. Treinar
 
 ```bash
-pip install -r requirements-treino.txt
-python -m app.training.treinar --data-dir dataset/coco --epochs 15 --saida data/models/faster_rcnn.pt
+python -m app.training.treinar --data-dir dataset/coco --epochs 15 --batch-size 2 --saida data/models/faster_rcnn.pt
 ```
 
 | Argumento | Padrão | Descrição |
@@ -286,7 +409,18 @@ python -m app.training.treinar --data-dir dataset/coco --epochs 15 --saida data/
 | `--lr` | `0.005` | Learning rate do SGD |
 | `--sem-avaliacao` | desligado | Pula o cálculo de mAP no fim |
 
-O treino usa CUDA automaticamente quando disponível e avisa se cair em CPU.
+O treino usa CUDA automaticamente quando disponível e avisa se cair em
+CPU.
+
+> **VRAM:** a GTX 1660 tem 6 GB. Comece com `--batch-size 2`. Se
+> aparecer `torch.OutOfMemoryError: CUDA out of memory`, baixe para
+> `--batch-size 1`; se sobrar memória (acompanhe com `nvidia-smi`),
+> suba para 4. No Windows, `--num-workers 0` evita problemas de
+> multiprocessing se o DataLoader travar.
+
+A primeira execução baixa os pesos pré-treinados em COCO de
+`download.pytorch.org` (~170 MB) e precisa de internet. As execuções
+seguintes usam o cache local.
 
 ### 3. Copiar o checkpoint para a máquina de inferência
 
@@ -307,12 +441,95 @@ primeira requisição, e reaproveitado nas seguintes.
 docker compose up
 ```
 
+### 5. Testar na máquina de inferência
+
+Depois de copiar o `.pt`, três checagens em ordem crescente de custo.
+
+**a) O checkpoint é válido?** Não constrói o modelo nem precisa de imagem
+— é instantâneo e mostra o que veio de dentro do arquivo, incluindo o mAP
+registrado no treino:
+
+```bash
+python -m app.detection.verificar
+```
+
+```text
+========================================================================
+ CHECKPOINT
+========================================================================
+arquivo       : .../data/models/faster_rcnn.pt
+tamanho       : 165.8 MB
+formato       : versão 1
+arquitetura   : fasterrcnn_resnet50_fpn_v2
+classes       : 24
+    label  1 -> Acumulador
+    ...
+    label 24 -> Válvula
+metadados     :
+    epocas             = 50
+    mAP@[.5:.95]       = 0.31
+    ...
+```
+
+**b) O modelo roda em CPU e detecta alguma coisa?** Carrega o detector de
+verdade e roda numa imagem, sem precisar do Tesseract nem da API:
+
+```bash
+python -m app.detection.verificar --imagem dataset/original/testes/diagramas/qtd_baixa/qld_alta/101.jpg
+```
+
+Mostra tempo de carga, tempo de inferência, contagem por classe e as
+detecções mais confiantes. Para inspecionar as caixas visualmente:
+
+```bash
+python -m app.detection.verificar --imagem dataset/original/testes/diagramas/qtd_baixa/qld_alta/101.jpg --limiar 0.3 --salvar data/output/anotada.png
+```
+
+Se não sair nenhuma detecção, baixe o limiar (`--limiar 0.1`) antes de
+concluir que há algo errado: modelo pouco treinado gera confiança baixa.
+
+**c) O pipeline completo, com OCR e planilha.** O Tesseract só está
+instalado dentro do container, então este teste roda no Docker:
+
+```bash
+docker compose up --build
+```
+
+Em outro terminal:
+
+```bash
+curl -X POST http://localhost:8000/api/process -F "file=@dataset/original/testes/diagramas/qtd_baixa/qld_alta/101.jpg" -o resultado.xlsx
+```
+
+Abra o `resultado.xlsx` e confira as seis colunas. Para checar a rejeição
+de arquivo inválido:
+
+```bash
+curl -i -X POST http://localhost:8000/api/process -F "file=@README.md;filename=falso.png;type=image/png"
+```
+
+Tem de responder `400` com "O arquivo enviado não é uma imagem
+reconhecível".
+
+---
+
 ### Configuração
 
 | Variável | Padrão | Descrição |
 |---|---|---|
 | `DETECTOR_CHECKPOINT_PATH` | `data/models/faster_rcnn.pt` | Caminho do checkpoint |
-| `DETECTOR_SCORE_THRESHOLD` | `0.5` | Confiança mínima para uma detecção entrar na planilha |
+| `DETECTOR_SCORE_THRESHOLD` | `0.05` | Confiança mínima para uma detecção entrar na planilha. Baixo de propósito — ver [Política de detecção](#política-de-detecção-cobertura-acima-de-precisão) |
+| `CORS_ORIGINS` | `*` | Origens permitidas para o frontend, separadas por vírgula |
+| `DB_PATH` | `:memory:` | Banco de execuções. O `docker-compose.yml` aponta para `data/iastech.db`; com o padrão `:memory:` o histórico some quando o processo cai |
+
+Ajustáveis em `app/config.py` (não exigem retreinar):
+
+| Constante | Padrão | Descrição |
+|---|---|---|
+| `DETECTOR_MAX_DETECCOES` | `300` | Teto de detecções por imagem. O torchvision usa 100; diagramas densos do dataset chegam a 175 símbolos e perderiam o excedente em silêncio |
+| `DETECTOR_NMS_ENTRE_CLASSES` | `0.5` | IoU para descartar caixas duplicadas classificadas em classes diferentes. `0` desliga |
+| `OCR_CONFIANCA_MINIMA` | `40.0` | Confiança mínima do Tesseract para um texto virar candidato a TAG |
+| `ASSOCIACAO_RAIO_RELATIVO` | `0.75` | Raio de busca por uma TAG fora da caixa, como fração da diagonal dela |
 
 ### Aproveitar pesos já treinados pelo benchmark
 
@@ -328,6 +545,246 @@ python -m app.training.empacotar_checkpoint --pesos ../modelos_base_claude/resul
 > Use os **mesmos** arquivos de anotação usados no treino daqueles pesos.
 > Com JSONs diferentes o checkpoint carrega sem erro e devolve as classes
 > trocadas.
+
+---
+
+## 🗄️ Histórico de execuções
+
+Cada imagem processada é registrada no SQLite (`app/models/database.py`),
+em duas tabelas:
+
+| Tabela | Uma linha por | Guarda |
+|---|---|---|
+| `execucoes` | imagem processada | arquivo, dimensões, **checkpoint**, limiar, nº de detecções, nº de TAGs lidas, tempos de detecção/OCR/total |
+| `deteccoes` | equipamento detectado | classe, score, bounding box, TAG normalizada, texto bruto do OCR, Descrição, Grupo |
+
+Existem porque a planilha em `data/output` responde *"o que tem neste
+diagrama?"*, e há uma segunda pergunta — *"o modelo está melhorando?"* —
+que exige comparar rodadas e por isso não sobrevive num arquivo
+regravado a cada execução.
+
+O `checkpoint` fica gravado em cada linha justamente para isso: sem saber
+qual modelo gerou cada resultado, os números de duas rodadas não são
+comparáveis.
+
+```python
+from app.models import execucoes
+
+execucoes.listar(limite=10)        # rodadas mais recentes
+execucoes.obter(3)                 # uma rodada
+execucoes.deteccoes_de(3)          # o que o modelo previu nela
+```
+
+Os indicadores da Etapa 05 do Plano de Desenvolvimento saem direto de SQL:
+
+```sql
+SELECT COUNT(*)                              AS execucoes,
+       AVG(tempo_total_ms)                   AS tempo_medio_ms,
+       SUM(qtd_tags_lidas) * 1.0
+           / NULLIF(SUM(qtd_deteccoes), 0)   AS taxa_acerto_ocr
+  FROM execucoes;
+```
+
+### Matriz de confusão
+
+O gabarito **não** é duplicado no banco: os `.xml` em `dataset/original`
+já estão versionados. A matriz sai do cruzamento entre eles e a tabela
+`deteccoes`, casando por IoU e classe:
+
+- **VP** — predição que casou com uma anotação da mesma classe;
+- **FP** — predição sem anotação correspondente, ou com a classe errada;
+- **FN** — anotação que nenhuma predição cobriu.
+
+> **VN não existe naturalmente em detecção de objetos.** Não há um
+> conjunto finito de "caixas que poderiam ter sido detectadas e
+> corretamente não foram", então não há o que contar. VP, FP e FN saem do
+> cruzamento; o VN pedido na reunião de 14/08 precisa antes de uma
+> definição de negócio (por exemplo: classes do catálogo ausentes no
+> diagrama e corretamente não previstas). Registrado aqui para ser
+> combinado com o cliente, e não inventado na hora de calcular.
+
+### Configuração
+
+O padrão é `:memory:`, e nesse modo o histórico morre junto com o
+processo. O `docker-compose.yml` aponta `DB_PATH` para
+`data/iastech.db`, que o volume `./data` expõe no host. O arquivo está
+no `.gitignore`: é resultado de rodada, não código.
+
+O registro é **best-effort**. Se o banco falhar, o processamento entrega
+a planilha assim mesmo e devolve `execucao_id = None` — telemetria não
+pode derrubar o produto. Só `sqlite3.Error` é engolido; qualquer outra
+exceção continua subindo, porque seria bug de verdade.
+
+---
+
+## 📐 Medição do modelo (Etapa 05)
+
+Três CLIs em `app/diagnostico/`, para responder *"o modelo está
+melhorando?"* com número em vez de impressão. Precisam do dataset e, no
+caso do lote, do Tesseract — ambos existem dentro do container via
+volume, então o caminho normal é `docker compose run --rm app ...`.
+
+### 1. Rodar o conjunto de teste inteiro
+
+```bash
+docker compose run --rm app python -m app.diagnostico.lote --imagens dataset/original/testes
+```
+
+Processa cada imagem pelo **mesmo** `processar_imagem` que a API usa — uma
+medição que passasse por um caminho paralelo mediria esse caminho, não a
+produção — e grava tudo no banco de execuções.
+
+### 2. Matriz de confusão
+
+```bash
+docker compose run --rm app python -m app.diagnostico.matriz_confusao --ultimas 21
+```
+
+Cruza as detecções gravadas com os `.xml` do gabarito, casando as caixas
+por IoU. Também aceita `--execucoes 3,4,5`, `--checkpoint <caminho>` e
+`--iou 0.5`.
+
+O casamento acontece **antes** de comparar as classes. Uma válvula
+rotulada como "Outro" aparece como classe trocada, e não como um FP
+somado a um FN — o modelo achou o equipamento e errou só o rótulo, que é
+um problema diferente, com solução diferente.
+
+> **VN não é reportado.** Detecção de objetos não tem verdadeiro negativo
+> natural: não existe um conjunto finito de "caixas que poderiam ter sido
+> previstas e corretamente não foram". VP, FP e FN saem do cruzamento; o
+> VN pedido na reunião de 14/08 precisa antes de uma definição de negócio
+> a combinar com o cliente. O relatório diz "não aplicável" em vez de
+> imprimir um zero que pareceria medição.
+
+### 3. Calibrar o limiar do OCR
+
+```bash
+docker compose run --rm app python -m app.diagnostico.calibrar_ocr --imagens dataset/original/testes
+```
+
+Roda o OCR sem filtro nenhum, separa o que casa com o padrão ISA do que é
+ruído e varre os limiares, mostrando quanta TAG legítima cada corte
+custaria. Use para escolher `OCR_CONFIANCA_MINIMA` com dados.
+
+### 4. Relatório comparativo (Excel)
+
+```bash
+docker compose run --rm app python -m app.diagnostico.relatorio --saida data/output/relatorio.xlsx
+```
+
+Agrupa as execuções gravadas **por checkpoint**: rodar o lote com um
+modelo, depois com outro, e gerar o relatório uma vez põe as duas rodadas
+lado a lado em todas as abas.
+
+| Aba | Conteúdo |
+|---|---|
+| `Leia-me` | Como cada número é apurado e o que mais épocas podem ou não resolver |
+| `Resumo` | Uma linha por checkpoint: VP/FP/FN, precisão, revocação, F1, tempos, e os metadados do treino (épocas, mAP, loss) lidos do próprio `.pt` |
+| `Curva` | Precisão × revocação em cada limiar de score |
+| `Por classe` | Desempenho por classe **cruzado com quantos exemplos de treino a classe tem** |
+| `Por imagem` | Ordenada pela pior revocação — por onde começar a olhar |
+| `Confusões` | Pares de classe trocados |
+| `Detecções` | Uma linha por predição e por anotação perdida, com IoU, coordenadas e TAG |
+
+Todas as abas têm filtro do Excel ligado e cabeçalho congelado.
+
+**A coluna que faz o diagnóstico** é `Exemplos no treino`, na aba
+`Por classe`, lida ao lado da revocação:
+
+- muitos exemplos + revocação baixa → **subtreino**, mais épocas tendem a ajudar;
+- poucos exemplos + revocação zero → **falta de dado**, épocas não criam exemplo;
+- muitos exemplos + revocação zero → **anotação suspeita**, vale reanotar antes de treinar de novo.
+
+---
+
+### Política de detecção: cobertura acima de precisão
+
+O sistema é calibrado para **detectar o máximo possível**, incluindo
+símbolos mal desenhados ou ambíguos. A razão é assimétrica: um
+equipamento que não aparece na planilha é invisível para quem confere o
+diagrama, enquanto um a mais é uma linha que se apaga.
+
+Na prática isso significa `DETECTOR_SCORE_THRESHOLD = 0.05`, e não o 0.5
+que seria o padrão conservador. O valor foi **medido**, não escolhido —
+sobre as 21 imagens anotadas de teste, IoU 0.5:
+
+| limiar | previstas | VP | FP | FN | classe trocada | precisão | revocação | F1 |
+|---|---|---|---|---|---|---|---|---|
+| 0.01 | 946 | 317 | 408 | 289 | 221 | 0.335 | 0.383 | — |
+| **0.05** | **776** | **303** | **258** | **309** | **215** | **0.390** | **0.366** | **0.378** |
+| 0.10 | 702 | 292 | 204 | 329 | 206 | 0.416 | 0.353 | 0.382 |
+| 0.30 | 564 | 269 | 133 | 396 | 162 | 0.477 | 0.325 | 0.387 |
+| 0.50 | 455 | 237 | 92 | 464 | 126 | 0.521 | 0.287 | 0.370 |
+| 0.80 | 296 | 158 | 46 | 577 | 92 | 0.534 | 0.191 | 0.281 |
+
+Reproduza com:
+
+```bash
+docker compose run --rm app python -m app.diagnostico.matriz_confusao --ultimas 21 --curva
+```
+
+Três coisas que essa tabela mostra:
+
+**Não se está trocando acurácia por cobertura.** O F1 é praticamente
+plano entre 0.05 e 0.5 (0.378 contra 0.370) — baixar o limiar só anda na
+curva, não piora o modelo.
+
+**O limiar não é o principal limitador da cobertura.** Mesmo em 0.01,
+289 equipamentos anotados não recebem caixa nenhuma. O modelo
+simplesmente não propõe região ali. Descer de 0.05 para 0.01 custa +150
+falsos positivos para ganhar +14 acertos — disponível via variável de
+ambiente, mas o retorno é ruim.
+
+**O gargalo maior é classificação, não detecção.** Em 0.05 o modelo põe
+caixa no lugar certo em **62,6%** dos equipamentos anotados, mas acerta o
+rótulo em apenas 36,6%. Os 215 restantes estão localizados com o `Tipo`
+errado — já foram "detectados" no sentido do requisito, e a correção
+deles passa por treino e qualidade de anotação, não por limiar.
+
+#### O que NÃO foi afrouxado, e por quê
+
+**NMS entre classes continua ligado.** Desligá-lo acrescenta 654
+predições e ganha 2 acertos; a precisão desaba de 0.390 para 0.213. O que
+ele remove é a mesma caixa saindo duas vezes com rótulos diferentes —
+duplicata, não cobertura.
+
+**O teto de 300 detecções por imagem não está limitando.** A imagem mais
+densa do conjunto produziu 124 detecções em 0.05 e 168 em 0.01.
+
+**Equipamento sem TAG legível continua na planilha**, com o `Tipo` e as
+coordenadas preenchidos e a coluna TAG vazia. O filtro do padrão ISA
+limpa o campo TAG, nunca descarta a linha.
+
+---
+
+### Baseline — Faster R-CNN, 15 épocas
+
+Medido sobre as 21 imagens anotadas de `dataset/original/testes`, IoU 0.5.
+Com o limiar **0.05** que passou a ser o padrão:
+
+| Métrica | Valor |
+|---|---|
+| VP | 303 |
+| FP | 258 |
+| FN | **309** |
+| Classe trocada | 215 |
+| Precisão | 0.390 |
+| Revocação | 0.366 |
+| F1 | 0.378 |
+| Equipamentos localizados | 62,6% |
+
+O erro dominante é o falso negativo: o modelo **deixa de ver** mais do que
+erra. E 10 das 24 classes ficaram em zero — as mesmas que têm ≤8 exemplos
+no treino.
+
+Para referência, o mesmo checkpoint no limiar conservador de 0.5 dava
+VP 237 / FP 92 / FN 464, revocação 0.287.
+
+Maior confusão isolada: **83× `Outro` previsto como `Instrumento`**.
+
+> `174.jpg` está em `dataset/original/testes` sem o `.xml` correspondente
+> e por isso fica fora da medição. O relatório avisa na linha
+> "sem gabarito".
 
 ---
 
@@ -356,6 +813,10 @@ pytest -m "not lento"
 | `tests/test_checkpoint.py` | Formato portátil, carga em CPU, recusa de `state_dict` puro |
 | `tests/test_modelo.py` | Cabeça com `num_classes + 1` saídas e a convenção `classes[label - 1]` |
 | `tests/test_detector.py` | Carga do checkpoint, formato das detecções, limiar, singleton |
+| `tests/test_verificar.py` | CLI de diagnóstico: inspeção do checkpoint e imagem anotada |
+| `tests/test_execucoes.py` | Persistência das rodadas: contexto do checkpoint, contagens e durabilidade em arquivo |
+| `tests/test_matriz_confusao.py` | Casamento por IoU e contagem de VP/FP/FN — se ele errar, todo o relatório mente junto |
+| `tests/test_relatorio.py` | Casamento detalhado, totais e o cruzamento com os exemplos de treino |
 | `tests/test_dataset_coco.py` | Canonicalização por nome e encoding UTF-8 das categorias |
 | `tests/test_tag_service.py` | Descrição pela ISA-5.1 e Grupo pelo primeiro dígito |
 | `tests/test_associacao.py` | Casamento entre texto do OCR e equipamento detectado |
@@ -423,6 +884,7 @@ Hackton IASTECH/
 │   ├── api/            → rotas HTTP
 │   ├── core/           → exceções de domínio
 │   ├── detection/      → inferência: Faster R-CNN em CPU
+│   ├── diagnostico/    → medição: lote, matriz, relatório, OCR
 │   ├── export/
 │   ├── models/         → banco SQLite e referência ISA-5.1
 │   ├── pipeline/       → tratamento de imagem, MSER e OCR
@@ -461,6 +923,7 @@ Contém o código principal da aplicação.
 - **`app/api/`** — Rotas HTTP da API (FastAPI).
 - **`app/core/`** — Exceções de domínio, traduzidas em status HTTP pela camada de rotas.
 - **`app/detection/`** — Inferência do Faster R-CNN: leitura do checkpoint portátil e detecção dos equipamentos. Roda em CPU e não depende de nada de treino.
+- **`app/diagnostico/`** — CLIs de medição (Etapa 05): rodar o conjunto de teste em lote, matriz de confusão contra o gabarito e calibração do limiar do OCR. Não fazem parte do fluxo que atende o usuário.
 - **`app/export/`** — Responsável pela exportação dos dados processados.
 - **`app/models/`** — Modelos e estruturas de dados utilizados pela aplicação, incluindo a tabela de referência ISA-5.1.
 - **`app/pipeline/`** — Tratamento de imagem, detecção de regiões de texto (MSER), agrupamento e OCR.
