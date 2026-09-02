@@ -59,6 +59,11 @@ desktop.ini
 data/input/*
 data/output/*
 
+# Planilha baixada da API na raiz do projeto. É o nome que o exemplo de
+# curl do README grava (`-o resultado.xlsx`); a versão canônica de cada
+# execução fica em data/output/<uuid>/.
+/resultado.xlsx
+
 # Mantém as pastas no Git
 !data/input/.gitkeep
 !data/output/.gitkeep
@@ -70,6 +75,16 @@ data/output/*
 *.tmp
 *.temp
 *.bak
+# ==============================
+# Banco de dados local
+# ==============================
+#
+# Histórico de execuções (DB_PATH). É resultado de rodada, não
+# código: cada máquina tem o seu.
+
+data/*.db
+data/*.db-journal
+
 # ==============================
 # Modelos treinados
 # ==============================

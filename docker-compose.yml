@@ -23,6 +23,10 @@ services:
       # gerado no treino para data/models/ (o volume ./data já o expõe
       # dentro do container).
       DETECTOR_CHECKPOINT_PATH: "data/models/faster_rcnn.pt"
-      DETECTOR_SCORE_THRESHOLD: "0.5"
+      DETECTOR_SCORE_THRESHOLD: "0.05"
+      # Banco de execuções. Sem isto o padrão é :memory:, e o
+      # histórico usado pela matriz de confusão morre junto com o
+      # container. O volume ./data já expõe o arquivo no host.
+      DB_PATH: "data/iastech.db"
 
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
