@@ -1,9 +1,23 @@
-def main():
-    print("===================================")
-    print(" IASTECH - Análise de Fluxogramas")
-    print("===================================")
-    print("Aplicação iniciada com sucesso!")
+from fastapi import FastAPI
+
+from app.api.routes import router
 
 
-if __name__ == "__main__":
-    main()
+app = FastAPI(
+    title="IASTECH - Análise de Fluxogramas",
+    description="API para processamento de fluxogramas industriais.",
+    version="1.0.0",
+)
+
+app.include_router(router)
+
+
+@app.get("/")
+def root():
+    return {
+        "message": "IASTECH API",
+        "status": "online",
+    }
+
+
+

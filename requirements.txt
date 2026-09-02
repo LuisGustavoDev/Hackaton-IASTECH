@@ -1,3 +1,8 @@
+#Server
+fastapi
+uvicorn
+python-multipart
+
 # Processamento de imagens
 opencv-python-headless
 Pillow
