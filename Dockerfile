@@ -21,11 +21,18 @@ RUN apt-get update && apt-get install -y \
 # Copia as dependências Python
 COPY requirements.txt .
 
-# Atualiza pip e instala as dependências
+# Atualiza pip e instala as dependências.
+#
+# torch/torchvision vêm ANTES e do índice CPU-only: a produção roda em
+# notebook sem GPU, e as rodas padrão do PyPI trazem junto as bibliotecas
+# CUDA (mais de 800 MB de imagem que nunca seriam usados).
 RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch torchvision && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copia o código da aplicação
+# Copia o código da aplicação (app/training fica de fora — ver .dockerignore)
 COPY app ./app
 
 # Copia os dados
@@ -34,5 +41,7 @@ COPY data ./data
 # Copia os testes
 COPY tests ./tests
 
-# Comando padrão
-CMD ["python", "-m", "app.main"]
+EXPOSE 8000
+
+# Comando padrão: sobe a API
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

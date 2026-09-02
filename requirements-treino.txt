@@ -1,0 +1,25 @@
+# Dependências EXCLUSIVAS do treino (app/training).
+#
+# Instale só na máquina forte (desktop com GPU NVIDIA / CUDA). A máquina
+# de inferência não precisa de nada disso: o que ela recebe é apenas o
+# arquivo de checkpoint .pt.
+#
+# Este arquivo é STANDALONE de propósito — ele NÃO inclui o
+# requirements.txt de produção. Treinar não usa fastapi, uvicorn, opencv,
+# pytesseract, paddleocr, pandas nem openpyxl; arrastar tudo isso para a
+# máquina de treino só acrescenta ~1 GB de download e mais superfície de
+# falha na instalação.
+#
+# IMPORTANTE: instale torch/torchvision ANTES deste arquivo, pelo índice
+# da sua versão de CUDA — senão o pip baixa a build de CPU e o treino
+# roda sem GPU. Veja "Primeira configuração da máquina de treino" no
+# README.
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#   pip install -r requirements-treino.txt
+
+torch
+torchvision
+numpy
+Pillow
+pycocotools

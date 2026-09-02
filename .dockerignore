@@ -67,3 +67,23 @@ desktop.ini
 
 data/input/*
 data/output/*
+# ==============================
+# Treino (não vai para produção)
+# ==============================
+#
+# O treino roda na máquina com GPU e depende de pycocotools/tqdm e do
+# dataset COCO. A imagem de produção só precisa do módulo de inferência
+# (app/detection) e do arquivo de checkpoint.
+
+app/training/
+dataset/
+requirements-treino.txt
+
+# ==============================
+# Modelos treinados
+# ==============================
+#
+# O checkpoint entra por volume (./data:/app/data), não pela imagem:
+# são ~170 MB que mudam a cada treino.
+
+data/models/*.pt

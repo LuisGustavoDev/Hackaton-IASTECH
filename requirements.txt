@@ -8,6 +8,14 @@ opencv-python-headless
 Pillow
 numpy
 
+# Detecção de equipamentos (Faster R-CNN)
+#
+# A inferência roda em CPU. No Dockerfile a instalação usa o índice
+# CPU-only da PyTorch (download.pytorch.org/whl/cpu); instalar daqui pelo
+# PyPI puxa as dependências CUDA e a imagem passa de 800 MB à toa.
+torch
+torchvision
+
 # OCR
 pytesseract
 paddleocr
@@ -17,3 +25,6 @@ pandas
 
 # Exportação para Excel
 openpyxl
+
+# Testes
+pytest
